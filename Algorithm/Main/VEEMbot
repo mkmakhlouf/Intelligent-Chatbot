@@ -1,0 +1,1510 @@
+{
+  "nbformat": 4,
+  "nbformat_minor": 0,
+  "metadata": {
+    "accelerator": "GPU",
+    "colab": {
+      "name": "two_questions_answering_best-3.ipynb",
+      "provenance": [],
+      "collapsed_sections": [],
+      "toc_visible": true
+    },
+    "kernelspec": {
+      "display_name": "Python 3",
+      "name": "python3"
+    }
+  },
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "4SzTvZjnazWN"
+      },
+      "source": [
+        "#Imports"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "WWHjBopFa-FM"
+      },
+      "source": [
+        "###Open question imports"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "nOwMr3aSbD4k"
+      },
+      "source": [
+        "%%capture\n",
+        "\n",
+        "!pip install wikipedia-api\n",
+        "!pip install wikipedia\n",
+        "!pip install transformers==2.5.1\n",
+        "!pip install python-rake\n",
+        "!pip install stop-words\n",
+        "!pip install translate\n",
+        "!pip install langdetect\n",
+        "!pip install googlesearch-python\n",
+        "!pip install numpy\n",
+        "!pip install gtts\n",
+        "!pip install ffmpeg-python\n",
+        "!pip install SpeechRecognition\n",
+        "!pip install pyspellchecker\n",
+        "!pip install autocorrect\n",
+        "\n",
+        "import warnings\n",
+        "warnings.filterwarnings('ignore')\n",
+        "\n",
+        "import json\n",
+        "import wikipediaapi\n",
+        "import wikipedia\n",
+        "from transformers import pipeline\n",
+        "import RAKE\n",
+        "import operator\n",
+        "from stop_words import get_stop_words\n",
+        "from textblob import TextBlob #useless\n",
+        "import nltk\n",
+        "import numpy\n",
+        "import spacy\n",
+        "from googlesearch import search\n",
+        "import keras\n",
+        "from keras.models import Model\n",
+        "from keras.preprocessing.text import Tokenizer\n",
+        "from keras.preprocessing import sequence\n",
+        "import pickle\n",
+        "import re\n",
+        "from nltk.corpus import stopwords\n",
+        "from IPython.utils import io as io2\n",
+        "from gtts import gTTS\n",
+        "from IPython.display import Audio , display\n",
+        "from IPython.display import HTML, Audio\n",
+        "from google.colab.output import eval_js\n",
+        "from base64 import b64decode\n",
+        "import numpy as np\n",
+        "from scipy.io.wavfile import read as wav_read\n",
+        "from scipy.io.wavfile import write\n",
+        "import io\n",
+        "import ffmpeg\n",
+        "import speech_recognition as sr\n",
+        "from spellchecker import SpellChecker\n",
+        "from autocorrect import Speller\n",
+        "import datetime\n",
+        "\n",
+        "nltk.download('averaged_perceptron_tagger')\n",
+        "nltk.download('punkt')\n",
+        "nltk.download('stopwords')"
+      ],
+      "execution_count": 90,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "8a0Bbt6sbERC"
+      },
+      "source": [
+        "###Closed question imports"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "zObWvwbLasy3"
+      },
+      "source": [
+        "# !pip install urllib3==1.25.10\n",
+        "import os\n",
+        "import urllib3\n",
+        "import urllib.request\n",
+        "# !pip install torch torchvision\n",
+        "# !pip install pandas\n",
+        "\n",
+        "# !gsutil cp gs://boolq/train.jsonl .\n",
+        "# !gsutil cp gs://boolq/dev.jsonl .\n",
+        "\n",
+        "import random\n",
+        "import torch\n",
+        "import numpy as np\n",
+        "import pandas as pd\n",
+        "from tqdm import tqdm\n",
+        "import botocore\n",
+        "from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler\n",
+        "from transformers import AutoTokenizer, AutoModelForSequenceClassification, AdamW\n",
+        "\n",
+        "# !pip install translate\n",
+        "from translate import Translator"
+      ],
+      "execution_count": 91,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "4rQPMZkRgd3f"
+      },
+      "source": [
+        "###Import all the models (to gain time, for open question)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "DIVdTc_mgmFG"
+      },
+      "source": [
+        "%%capture\n",
+        "\n",
+        "models = [\"bert-large-uncased\", \"ktrapeznikov/albert-xlarge-v2-squad-v2\", \"illuin/camembert-large-fquad\"]       # Add each model we need : \"illuin/camembert-large-fquad\", \n",
+        "\n",
+        "models_charged = []\n",
+        "\n",
+        "for model in models:\n",
+        "  models_charged.append(pipeline('question-answering', model=model, tokenizer=model))"
+      ],
+      "execution_count": 92,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "whjktOoCazdb"
+      },
+      "source": [
+        "#Open question functions"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "lBmqKfwEazvl"
+      },
+      "source": [
+        "###Select the topic (when keyword not found in Wikipedia)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "X4-S_PKWas3D"
+      },
+      "source": [
+        "def selectTopic(arrayTopic, keyword):\n",
+        "\n",
+        "    if len(arrayTopic) == 0:\n",
+        "      moreInfos(keyword, language)\n",
+        "      choice = -1\n",
+        "    else :\n",
+        "      print(\"\\nChoice : \" + keyword + \" may refer to : \")\n",
+        "      for i in range (len(arrayTopic)):\n",
+        "        print(i, arrayTopic[i])\n",
+        "      choice = int(input(\"\\nEnter a choice : \"))\n",
+        "      assert choice in range(len(arrayTopic))\n",
+        "\n",
+        "    return choice"
+      ],
+      "execution_count": 93,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "RqYH4SF9batQ"
+      },
+      "source": [
+        "###Find another summary on Wikipedia (if the score of the answer is not good)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "rCGrGGP2auJS"
+      },
+      "source": [
+        "def findOtherText(keyword, language):\n",
+        "    wikipedia.set_lang(language)\n",
+        "\n",
+        "    try:\n",
+        "        page = wikipedia.page(keyword)\n",
+        "        finalText = page.summary\n",
+        "    except:\n",
+        "        topics = wikipedia.search(keyword)\n",
+        "\n",
+        "        arrayTopic = []\n",
+        "\n",
+        "        for i, topic in enumerate(topics):\n",
+        "            if topic.lower() != keyword and keyword in topic.lower():\n",
+        "                arrayTopic.append(topic)\n",
+        "\n",
+        "        choice = selectTopic(arrayTopic, keyword)\n",
+        "\n",
+        "        if choice != -1:\n",
+        "          wiki_wiki = wikipediaapi.Wikipedia(language)\n",
+        "          finalText = wiki_wiki.page(arrayTopic[choice]).summary\n",
+        "        else :\n",
+        "          finalText = \"\"\n",
+        "    \n",
+        "    return finalText"
+      ],
+      "execution_count": 94,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "xQgsVxEFbrpx"
+      },
+      "source": [
+        "###Find summary on Wikipedia"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "SrD-EN1nat4a"
+      },
+      "source": [
+        "def getText(search, language, max_words):\n",
+        "    wiki_wiki = wikipediaapi.Wikipedia(language)\n",
+        "    page_py = wiki_wiki.page(search)\n",
+        "    \n",
+        "    sentences = str(page_py.summary).split(\".\")\n",
+        "    total_words = len(str(page_py.summary).split())\n",
+        "    \n",
+        "    # Test if a page wikipedia is found or not\n",
+        "    if page_py.exists() == False:\n",
+        "        exit(\"No Wikipedia page found\")\n",
+        "\n",
+        "    sentences = str(page_py.summary).split(\".\")\n",
+        "    total_words = len(str(page_py.summary).split())\n",
+        "\n",
+        "    finalText = \"\"\n",
+        "    words = 0\n",
+        "    i=0\n",
+        "\n",
+        "    while (words < max_words and words < total_words and i < len(sentences)):\n",
+        "        finalText += sentences[i] + \".\"\n",
+        "        words += len(sentences[i].split(\" \"))\n",
+        "        i+=1\n",
+        "\n",
+        "    if (words < 100): # if nb of words < 100, we consider that the summary is empty\n",
+        "        finalText = findOtherText(search, language)\n",
+        "\n",
+        "    return finalText"
+      ],
+      "execution_count": 95,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "_E1r3kalb0zi"
+      },
+      "source": [
+        "###Print a displayable answer (add capital letter in the beginning of the sentence, add dot at the end)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "o3shAkIfb_E1"
+      },
+      "source": [
+        "def response(response):\n",
+        "    \n",
+        "    response = response.capitalize()\n",
+        "    listOfCharacters = \". '&§!,;:?/-*\"\n",
+        "\n",
+        "    if response[len(response) - 1] in listOfCharacters:\n",
+        "        response = response[:len(response)-1]\n",
+        "\n",
+        "    response+=\".\"\n",
+        "\n",
+        "    return response"
+      ],
+      "execution_count": 96,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "j4nteEXwcKca"
+      },
+      "source": [
+        "###Remove verb in the keyword found (using NLTK)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "Be-7PG5ycJar"
+      },
+      "source": [
+        "def removeVerb(keywords):\n",
+        "\n",
+        "    text = keywords\n",
+        "    text = nltk.word_tokenize(text) \n",
+        "    result = nltk.pos_tag(text) \n",
+        "    verb = \"\"\n",
+        "\n",
+        "    for array in result:\n",
+        "        if(array[1][:2]) == \"VB\":\n",
+        "            verb = array[0]\n",
+        "    \n",
+        "    new_text = keywords\n",
+        "\n",
+        "    if verb in new_text:\n",
+        "        querywords = new_text.split()\n",
+        "\n",
+        "        resultwords  = [word for word in querywords if word.lower() not in verb]\n",
+        "        new_text = ' '.join(resultwords)\n",
+        "\n",
+        "    print(\"\\n4. Keyword without verb : \" +new_text)\n",
+        "\n",
+        "    return new_text"
+      ],
+      "execution_count": 97,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "w2VoPH56cJ8f"
+      },
+      "source": [
+        "###Find the keyword of the question asked"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "Vy75N77scTiz"
+      },
+      "source": [
+        "def findKeywords(question, isOpen = True):\n",
+        "    language = \"\"\n",
+        "    b = TextBlob(question)\n",
+        "    language = b.detect_language()\n",
+        "\n",
+        "    #get stop words\n",
+        "    stop_words = get_stop_words(language)\n",
+        "    rake_object = RAKE.Rake(stop_words)\n",
+        "\n",
+        "    # Extract keywords\n",
+        "    keywords = rake_object.run(question)\n",
+        "\n",
+        "\n",
+        "    if isOpen:\n",
+        "      return keywords[len(keywords)-1][0]\n",
+        "    else:\n",
+        "      return keywords[0][0]"
+      ],
+      "execution_count": 98,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "ROrUyz5fcVTT"
+      },
+      "source": [
+        "###Find the language of the question asked"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "Q8OA8zeKcYYS"
+      },
+      "source": [
+        "def findLanguage(question):\n",
+        "    language = \"\"\n",
+        "    b = TextBlob(question)\n",
+        "    language = b.detect_language()\n",
+        "\n",
+        "    if language == \"so\":\n",
+        "        language = \"en\"\n",
+        "    \n",
+        "    print(\"\\n1. Language : \" + language + \"\\n\")\n",
+        "    return language"
+      ],
+      "execution_count": 99,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "_9Jir_42cbuO"
+      },
+      "source": [
+        "###Choose the right model to use (depending on the language)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "_yuuoyLwcb3Z"
+      },
+      "source": [
+        "def chooseModel(language):\n",
+        "    model = \"\"\n",
+        "\n",
+        "    if language == \"fr\":\n",
+        "      model = \"illuin/camembert-large-fquad\"\n",
+        "      return 2\n",
+        "    elif language == \"en\":\n",
+        "      model = \"ktrapeznikov/albert-xlarge-v2-squad-v2\"\n",
+        "      return 1\n",
+        "    else :\n",
+        "      model = \"bert-large-uncased\" \n",
+        "      return 0"
+      ],
+      "execution_count": 100,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "YnHXfx-CcjRq"
+      },
+      "source": [
+        "###Find the answer (using NLP, Pipeline)\n"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "S5cc3spKcjav"
+      },
+      "source": [
+        "def findAnswer(question, text, language):\n",
+        "    \n",
+        "    model = chooseModel(language)\n",
+        "    with io2.capture_output() as captured:\n",
+        "      reponse = (models_charged[model]({'question': question, 'context': text }))\n",
+        "      \n",
+        "    return reponse"
+      ],
+      "execution_count": 101,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "L2OFHJTsctPt"
+      },
+      "source": [
+        "###Anayze the score of the answer (for open question)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "EY5zp4xPctaS"
+      },
+      "source": [
+        "def analyzeScore(score):\n",
+        "    if (score < 0.7):\n",
+        "        print(\"The answer is not sure\")\n",
+        "    else:\n",
+        "        print(\"The answer is sure\")"
+      ],
+      "execution_count": 102,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "o6jwv-NGc5GE"
+      },
+      "source": [
+        "### Check if no wikipedia page exists (unused)\n"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "HRqmj8qjc5Pu"
+      },
+      "source": [
+        "def ifWikipediaPageExists(keyword, language):\n",
+        "\n",
+        "    wiki_wiki = wikipediaapi.Wikipedia(language)\n",
+        "    page_py = wiki_wiki.page(keyword)\n",
+        "\n",
+        "    if not page_py.exists():\n",
+        "        exit(\"No Wikipedia page found\")"
+      ],
+      "execution_count": 103,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "oWzmidFidNkj"
+      },
+      "source": [
+        "###Get more information (retrieve Google link)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "z-dsq3Y-dNt3"
+      },
+      "source": [
+        "def moreInfos(question, language):\n",
+        "      moreDetails = input(\"\\n8. More details (y/n) : \")\n",
+        "      if moreDetails == \"y\":\n",
+        "        print(\"Let's see this website : \" + search(question, lang=language)[0])"
+      ],
+      "execution_count": 104,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "O5p2rRFsdcbk"
+      },
+      "source": [
+        "#Closed question functions"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "JkesvMZVd5Vq"
+      },
+      "source": [
+        "###Get the accuracy of the answer"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "IMruNErUdhVu"
+      },
+      "source": [
+        "def predict(question, passage):\n",
+        "  sequence = tokenizer.encode_plus(question, passage, return_tensors=\"pt\")['input_ids'].to(device)\n",
+        "  \n",
+        "  logits = model(sequence)[0]\n",
+        "  probabilities = torch.softmax(logits, dim=1).detach().cpu().tolist()[0]\n",
+        "  proba_yes = int(round(probabilities[1], 2) * 100)\n",
+        "  proba_no = int(round(probabilities[0], 2) * 100)\n",
+        "\n",
+        "  \n",
+        "\n",
+        "  if proba_yes > 60:\n",
+        "    print(\"\\n6. Score : \" + str(proba_yes) + \"%\")\n",
+        "    return \"Yes !\"\n",
+        "  elif (proba_yes > 50 and proba_yes < 60):\n",
+        "    print(\"\\n6. Score : \" + strr(proba_yes) + \"%\")\n",
+        "    return \"Not sure, but mostly YES\"\n",
+        "  elif (proba_no > 50 and proba_no < 60):\n",
+        "    print(\"\\n6. Score : \" + str(proba_no) + \"%\")\n",
+        "    return \"Not sure, but mostly No\"\n",
+        "  else:\n",
+        "    print(\"\\n6. Score : \" + str(proba_no) + \"%\")\n",
+        "    return \"No !\""
+      ],
+      "execution_count": 105,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "fcF-SWzZeCEV"
+      },
+      "source": [
+        "###Encode data "
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "d7IOXGQEeCPH"
+      },
+      "source": [
+        "def encode_data(tokenizer, questions, passages, max_length):\n",
+        "    \"\"\"Encode the question/passage pairs into features than can be fed to the model.\"\"\"\n",
+        "    input_ids = []\n",
+        "    attention_masks = []\n",
+        "\n",
+        "    for question, passage in zip(questions, passages):\n",
+        "        encoded_data = tokenizer.encode_plus(question, passage, max_length=max_length, pad_to_max_length=True, truncation_strategy=\"longest_first\")\n",
+        "        encoded_pair = encoded_data[\"input_ids\"]\n",
+        "        attention_mask = encoded_data[\"attention_mask\"]\n",
+        "\n",
+        "        input_ids.append(encoded_pair)\n",
+        "        attention_masks.append(attention_mask)\n",
+        "\n",
+        "    return np.array(input_ids), np.array(attention_masks)"
+      ],
+      "execution_count": 106,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "9PxHi8t0eM8g"
+      },
+      "source": [
+        "###All of the functions (closed question)\n"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "AM1tMZo9eNGq"
+      },
+      "source": [
+        "%%capture\n",
+        "\n",
+        "from google.colab import drive\n",
+        "drive.mount('/content/drive')\n",
+        "\n",
+        "# Use a GPU if you have one available (Runtime -> Change runtime type -> GPU)\n",
+        "device = torch.device(\"cuda\" if torch.cuda.is_available() else \"cpu\")\n",
+        "\n",
+        "# Set seeds for reproducibility\n",
+        "random.seed(26)\n",
+        "np.random.seed(26)\n",
+        "torch.manual_seed(26)\n",
+        "\n",
+        "tokenizer = AutoTokenizer.from_pretrained(\"roberta-base\") \n",
+        "\n",
+        "model = AutoModelForSequenceClassification.from_pretrained(\"roberta-base\")\n",
+        "model.to(device) # Send the model to the GPU if we have one\n",
+        "\n",
+        "learning_rate = 1e-5\n",
+        "optimizer = AdamW(model.parameters(), lr=learning_rate, eps=1e-8)\n",
+        "\n",
+        "# Loading data\n",
+        "train_data_df = pd.read_json(\"/content/drive/MyDrive/two_question_files/train.jsonl\", lines=True, orient='records')\n",
+        "dev_data_df = pd.read_json(\"/content/drive/MyDrive/two_question_files/dev.jsonl\", lines=True, orient=\"records\")\n",
+        "\n",
+        "passages_train = train_data_df.passage.values\n",
+        "questions_train = train_data_df.question.values\n",
+        "answers_train = train_data_df.answer.values.astype(int)\n",
+        "\n",
+        "passages_dev = dev_data_df.passage.values\n",
+        "questions_dev = dev_data_df.question.values\n",
+        "answers_dev = dev_data_df.answer.values.astype(int)\n",
+        "\n",
+        "# Encoding data\n",
+        "max_seq_length = 256\n",
+        "input_ids_train, attention_masks_train = encode_data(tokenizer, questions_train, passages_train, max_seq_length)\n",
+        "input_ids_dev, attention_masks_dev = encode_data(tokenizer, questions_dev, passages_dev, max_seq_length)\n",
+        "\n",
+        "train_features = (input_ids_train, attention_masks_train, answers_train)\n",
+        "dev_features = (input_ids_dev, attention_masks_dev, answers_dev)\n",
+        "\n",
+        "batch_size = 32\n",
+        "\n",
+        "train_features_tensors = [torch.tensor(feature, dtype=torch.long) for feature in train_features]\n",
+        "dev_features_tensors = [torch.tensor(feature, dtype=torch.long) for feature in dev_features]\n",
+        "\n",
+        "train_dataset = TensorDataset(*train_features_tensors)\n",
+        "dev_dataset = TensorDataset(*dev_features_tensors)\n",
+        "\n",
+        "train_sampler = RandomSampler(train_dataset)\n",
+        "dev_sampler = SequentialSampler(dev_dataset)\n",
+        "\n",
+        "train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=batch_size)\n",
+        "dev_dataloader = DataLoader(dev_dataset, sampler=dev_sampler, batch_size=batch_size)\n",
+        "\n",
+        "FILE = \"/content/drive/MyDrive/Colab Notebooks/data.pth\"\n",
+        "data = torch.load(FILE)\n",
+        "\n",
+        "model_state = data[\"model_state\"]\n",
+        "\n",
+        "model.load_state_dict(model_state)\n",
+        "model.eval()"
+      ],
+      "execution_count": 107,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "--49ACmwJlD0"
+      },
+      "source": [
+        "#More functionnalities"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "nmqJwmelewrx"
+      },
+      "source": [
+        "###Translate the question"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "W6JnztNue1Or"
+      },
+      "source": [
+        "def translateQuestion(question, language):    \n",
+        "  #return the question in English \n",
+        "  try:\n",
+        "    translator= Translator(to_lang=\"en\", from_lang=language) #'autodetect'\n",
+        "    res = translator.translate(question)\n",
+        "    return res  \n",
+        "    \n",
+        "  except NameError:\n",
+        "    return question"
+      ],
+      "execution_count": 108,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "mNqMglLuzcN7"
+      },
+      "source": [
+        "###Clean text for sentence"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "bJAkQmVQzf1h"
+      },
+      "source": [
+        "def clean_text(text):\n",
+        "    text = text.lower()\n",
+        "\n",
+        "    # Remove punctuations and numbers\n",
+        "    text = re.sub('[^a-zA-Z]', ' ', text)\n",
+        "\n",
+        "    # Single character removal\n",
+        "    text = re.sub(r\"\\s+[a-zA-Z]\\s+\", ' ', text)\n",
+        "\n",
+        "    # Removing multiple spaces\n",
+        "    text = re.sub(r'\\s+', ' ', text)\n",
+        "\n",
+        "    # Remove some abbreviations\n",
+        "    text = re.sub(r\"what's\", \"what is \", text)\n",
+        "    text = re.sub(r\"\\'s\", \" \", text)\n",
+        "    text = re.sub(r\"\\'ve\", \" have \", text)\n",
+        "    text = re.sub(r\"can't\", \"cannot \", text)\n",
+        "    text = re.sub(r\"n't\", \" not \", text)\n",
+        "    text = re.sub(r\"i'm\", \"i am \", text)\n",
+        "    text = re.sub(r\"\\'re\", \" are \", text)\n",
+        "    text = re.sub(r\"\\'d\", \" would \", text)\n",
+        "    text = re.sub(r\"\\'ll\", \" will \", text)\n",
+        "    text = re.sub(r\" e g \", \" eg \", text)\n",
+        "    text = re.sub(r\" b g \", \" bg \", text)\n",
+        "    text = re.sub(r\" u s \", \" american \", text)\n",
+        "    text = re.sub(r\"e - mail\", \"email\", text)\n",
+        "    \n",
+        "    # Worst results with the stop words removed\n",
+        "    # STOPWORDS = set(stopwords.words('english'))\n",
+        "    # text = ' '.join(word for word in text.split() if word not in STOPWORDS) # remove stopwords from text\n",
+        "\n",
+        "    return text"
+      ],
+      "execution_count": 109,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "QVMb-IxZ3Rcv"
+      },
+      "source": [
+        "###Answer for negative sentences"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "0SRfIE3W3USM"
+      },
+      "source": [
+        "def answer_sentences(positivity):\n",
+        "  if positivity == \"neg\":\n",
+        "    print(\"\\n4. Answer : Don't worry, it's gonna be ok !\")\n",
+        "  else :\n",
+        "    print(\"\\n4. Answer : I'm happy too\")"
+      ],
+      "execution_count": 110,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "-kInQCmKlg3g"
+      },
+      "source": [
+        "### Retrieve the current time"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "hEbIbdqrlmqL"
+      },
+      "source": [
+        "def get_time(question, language):\n",
+        "\n",
+        "  result = False\n",
+        "  words_related_to_time = [\"time\", \"hour\", \"minutes\", \"seconds\", \"day\", \"month\", \"year\", \"heure\"]\n",
+        "\n",
+        "  words_of_question = question.split()\n",
+        "\n",
+        "  for word in words_of_question:\n",
+        "    if word in words_related_to_time:\n",
+        "      result = True\n",
+        "      now = datetime.datetime.now()\n",
+        "      day = \"\"\n",
+        "\n",
+        "      if now.strftime('%a') == \"Mon\" and language == \"en\":\n",
+        "        day = \"Monday\"\n",
+        "      elif now.strftime('%a') == \"Mon\" and language == \"fr\":\n",
+        "        day = \"Lundi\"\n",
+        "      \n",
+        "      if now.strftime('%a') == \"Tue\" and language == \"en\":\n",
+        "        day = \"Tuesday\"\n",
+        "      elif now.strftime('%a') == \"Tue\" and language == \"fr\":\n",
+        "        day = \"Mardi\"\n",
+        "      \n",
+        "      if now.strftime('%a') == \"Wed\" and language == \"en\":\n",
+        "        day = \"Wednesday\"\n",
+        "      elif now.strftime('%a') == \"Wed\" and language == \"fr\":\n",
+        "        day = \"Mercredi\"\n",
+        "      \n",
+        "      if now.strftime('%a') == \"Thu\" and language == \"en\":\n",
+        "        day = \"Thursday\"\n",
+        "      elif now.strftime('%a') == \"Thu\" and language == \"fr\":\n",
+        "        day = \"Jeudi\"\n",
+        "\n",
+        "      if now.strftime('%a') == \"Fri\" and language == \"en\":\n",
+        "        day = \"Friday\"\n",
+        "      elif now.strftime('%a') == \"Fri\" and language == \"fr\":\n",
+        "        day = \"Vendredi\"\n",
+        "      \n",
+        "      if now.strftime('%a') == \"Sat\" and language == \"en\":\n",
+        "        day = \"Saturday\"\n",
+        "      elif now.strftime('%a') == \"Sat\" and language == \"fr\":\n",
+        "        day = \"Samedi\"\n",
+        "      \n",
+        "      if now.strftime('%a') == \"Sun\" and language == \"en\":\n",
+        "        day = \"Sunday\"\n",
+        "      elif now.strftime('%a') == \"Sun\" and language == \"fr\":\n",
+        "        day = \"Dimanche\"\n",
+        "\n",
+        "      if language == \"en\":\n",
+        "        answer = \"\\n3. Answer : We are on \" + day  + \" \" + str(now.month) + \"/\" + str(now.day) +\"/\"+str(now.year) +\" and it's \"+str(now.hour + 1) + \"h\" + str(now.minute)+\"m and \" + str(now.second)+\" seconds !\\n\"\n",
+        "        print(answer)\n",
+        "        answer = \"We are on \" + day  + \" \" + str(now.month) + \"/\" + str(now.day) +\"/\"+str(now.year) +\" and it's \"+str(now.hour + 1) + \"h\" + str(now.minute)+\"m and \" + str(now.second)+\" seconds !\\n\"\n",
+        "        text2speech(answer, language)\n",
+        "\n",
+        "        \n",
+        "\n",
+        "      elif language == \"fr\":\n",
+        "        answer = \"\\n3. Answer : Nous sommes le \" + day  + \" \" + str(now.day) + \"/\" + str(now.month) +\"/\"+str(now.year) +\" et il est \"+str(now.hour + 1) + \"h\" + str(now.minute)+\"m et \" + str(now.second)+\" secondes !\\n\"\n",
+        "        print(answer)\n",
+        "        answer = \"Nous sommes le \" + day  + \" \" + str(now.day) + \"/\" + str(now.month) +\"/\"+str(now.year) +\" et il est \"+str(now.hour + 1) + \"h\" + str(now.minute)+\"m et \" + str(now.second)+\" secondes !\\n\"\n",
+        "        text2speech(answer, language)\n",
+        "            \n",
+        "  return result"
+      ],
+      "execution_count": 137,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "PO12m_8SJr_S"
+      },
+      "source": [
+        "###Speech to text\n"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "Nd4zndc2JvX9"
+      },
+      "source": [
+        "def get_audio():\n",
+        "\n",
+        "  fichier = open(\"/content/drive/MyDrive/two_question_files/script.txt\", \"r\")   \n",
+        "  AUDIO_HTML = fichier.read()\n",
+        "  fichier.close()\n",
+        "\n",
+        "  display(HTML(AUDIO_HTML))\n",
+        "  data = eval_js(\"data\")\n",
+        "  binary = b64decode(data.split(',')[1])\n",
+        "  \n",
+        "  process = (ffmpeg\n",
+        "    .input('pipe:0')\n",
+        "    .output('pipe:1', format='wav')\n",
+        "    .run_async(pipe_stdin=True, pipe_stdout=True, pipe_stderr=True, quiet=True, overwrite_output=True)\n",
+        "  )\n",
+        "  output, err = process.communicate(input=binary)\n",
+        "  \n",
+        "  riff_chunk_size = len(output) - 8\n",
+        "\n",
+        "  q = riff_chunk_size\n",
+        "  b = []\n",
+        "  for i in range(4):\n",
+        "      q, r = divmod(q, 256)\n",
+        "      b.append(r)\n",
+        "\n",
+        "  riff = output[:4] + bytes(b) + output[8:]\n",
+        "  sr, audio = wav_read(io.BytesIO(riff))\n",
+        "  write(\"example.wav\", sr, audio.astype(np.int16))\n",
+        "\n",
+        "  return audio, sr\n",
+        "\n",
+        "def speech2text(language):\n",
+        "  r = sr.Recognizer()\n",
+        "\n",
+        "  hellow=sr.AudioFile('example.wav')\n",
+        "  with hellow as source:\n",
+        "      audio = r.record(source)\n",
+        "  try:\n",
+        "      s = r.recognize_google(audio, language=language) # For french : fr-FR ; for english : en-US\n",
+        "      print(\"Text: \"+s)\n",
+        "      return s\n",
+        "  except Exception as e:\n",
+        "      print(\"Exception: \"+str(e))"
+      ],
+      "execution_count": 112,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "GaT0LoqMJvrS"
+      },
+      "source": [
+        "###Text to speech\n"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "LQzbiD9VJzHv"
+      },
+      "source": [
+        "def text2speech(answer, language):\n",
+        "  tts = gTTS(answer, lang=language) \n",
+        "  tts.save('1.wav') \n",
+        "  sound_file = '1.wav'\n",
+        "  return display(Audio(sound_file, autoplay=True))"
+      ],
+      "execution_count": 113,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "JoB1ccvm3Wds"
+      },
+      "source": [
+        "###Correct question"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "m9AiyiYu3aXh"
+      },
+      "source": [
+        "def correct_question(question, language):\n",
+        "\n",
+        "  if \" ?\" in question:\n",
+        "    question = question.replace(\" ?\", \" ?\")\n",
+        "  elif \"?\" in question:\n",
+        "    question = question.replace(\"?\", \" ?\")\n",
+        "\n",
+        "  #Spell checker\n",
+        "  words = question.split()\n",
+        "  spell = SpellChecker(language=language)\n",
+        "\n",
+        "  if words[0][0].isupper():\n",
+        "      words[0] = words[0].lower()\n",
+        "  \n",
+        "  question_corrected = \"\"\n",
+        "\n",
+        "  for i in range (len(words)):\n",
+        "    isUpper = False\n",
+        "    for letter in words[i]:\n",
+        "      if letter.isupper():\n",
+        "        isUpper = True\n",
+        "        question_corrected += words[i]\n",
+        "        break\n",
+        "\n",
+        "    if not isUpper:\n",
+        "      question_corrected += spell.correction(words[i])\n",
+        "\n",
+        "    if i != len(words) - 1:\n",
+        "      question_corrected += \" \"\n",
+        "    \n",
+        "  question_corrected = question_corrected.capitalize() \n",
+        "\n",
+        "  if question_corrected != question :\n",
+        "    print(\"\\nHere are the results for : \" + question_corrected)\n",
+        "\n",
+        "  return question_corrected"
+      ],
+      "execution_count": 114,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "5qBlaWqfebMz"
+      },
+      "source": [
+        "#MAIN FOR OPEN QUESTION"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "vYOS2_30eaqq"
+      },
+      "source": [
+        "def openQuestion(question, language):\n",
+        "\n",
+        "    if __name__ == \"__main__\":\n",
+        "      \n",
+        "      #Keyword\n",
+        "      keyword = findKeywords(question)\n",
+        "\n",
+        "      print(\"\\n3. Keyword : \" + str(keyword))\n",
+        "\n",
+        "      #Keyword without verb\n",
+        "      keywordWithoutVerb = removeVerb(keyword)\n",
+        "\n",
+        "      #Summary\n",
+        "      text = getText(keywordWithoutVerb, language, 200)     \n",
+        "\n",
+        "      if text != \"\":\n",
+        "        print(\"\\n5. Summary : \" + str(text))\n",
+        "        #Answer\n",
+        "        reponse = findAnswer(question, text, language)\n",
+        "        \n",
+        "        print(\"\\n6. Score : \" + str(reponse[\"score\"]))\n",
+        "        return response(reponse[\"answer\"])\n",
+        "\n",
+        "        #Write json file\n",
+        "        #writeJson(question, keywordWithoutVerb, text, response(reponse[\"answer\"]))\n",
+        "\n",
+        "        \n",
+        "        \n",
+        "\n",
+        "      "
+      ],
+      "execution_count": 115,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "uSDiBuSNep-X"
+      },
+      "source": [
+        "#MAIN FOR CLOSED QUESTION"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "qbYNvAbXeqJW"
+      },
+      "source": [
+        "def closeQuestion(question, language):\n",
+        "\n",
+        "  keywords = findKeywords(question, isOpen = False)\n",
+        "  \n",
+        "  print(\"\\n3. Keyword : \" + keywords)\n",
+        "\n",
+        "  keywordWithoutVerb = removeVerb(keywords)\n",
+        "  passage = getText(keywordWithoutVerb, language, 200)\n",
+        "\n",
+        "  print(\"\\n5. Summary : \" + passage)\n",
+        "\n",
+        "  return predict(question, passage)"
+      ],
+      "execution_count": 116,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "FSzPQP9tzLe-"
+      },
+      "source": [
+        "#MAIN FOR SENTENCE"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "uRjX6S0IzOyO"
+      },
+      "source": [
+        "def detect_pos_neg_sentence(sentence):\n",
+        "\n",
+        "  model = keras.models.load_model(\"/content/drive/MyDrive/two_question_files/pos_neg_sentence.hdf5\")\n",
+        "\n",
+        "  with open('/content/drive/MyDrive/two_question_files/tokenizer.pickle', 'rb') as handle:\n",
+        "    tok = pickle.load(handle)\n",
+        "\n",
+        "  max_SMS_length = 200\n",
+        "  test_sentence = clean_text(sentence)\n",
+        "\n",
+        "  test_sentence = tok.texts_to_sequences([test_sentence])\n",
+        "  test_sentence = sequence.pad_sequences(test_sentence, maxlen=max_SMS_length)\n",
+        "  prediction_value = model.predict(test_sentence)[0][0]\n",
+        "\n",
+        "  if prediction_value < 0.5:\n",
+        "    print(\"\\n3. Score : Negative sentence with a faith of \" + str(round((1 - prediction_value)*100, 2)) + \"%\")\n",
+        "    return \"neg\"\n",
+        "  \n",
+        "  else:\n",
+        "    print(\"\\n3. Score : Positive sentence with a faith of \" + str(round(prediction_value*100, 2)) + \"%\")\n",
+        "    return \"pos\""
+      ],
+      "execution_count": 117,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "uZuESAw77jHj"
+      },
+      "source": [
+        "#Main for calculation"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "7ii8t51C7lTr"
+      },
+      "source": [
+        "def isCalcul(question):\n",
+        "  chiffres = \"1234567890\"\n",
+        "  nbre = 0\n",
+        "\n",
+        "  for letter in question:\n",
+        "    if letter in chiffres:\n",
+        "      nbre += 1\n",
+        "  \n",
+        "  modifiedQuestion = changeQuestion(question)\n",
+        "\n",
+        "  if nbre / len(modifiedQuestion) >= 0.5: # 12+4+5-3\n",
+        "    return True, eval(modifiedQuestion)\n",
+        "  else:\n",
+        "    return False, -1\n",
+        "\n",
+        "def changeQuestion(question):\n",
+        "  question = question.replace(\" \", \"\")\n",
+        "  question = question.replace(\"fois\", \"*\")\n",
+        "  question = question.replace(\"multiplié\", \"*\")\n",
+        "  question = question.replace(\"x\", \"*\")\n",
+        "  question = question.replace(\"times\", \"*\")\n",
+        "  question = question.replace(\"par\", \"/\")\n",
+        "  question = question.replace(\"divided\", \"/\")\n",
+        "  question = question.replace(\"divided by\", \"/\")\n",
+        "  question = question.replace(\"divisé\", \"/\")\n",
+        "  question = question.replace(\"moins\", \"-\")\n",
+        "  question = question.replace(\"minus\", \"-\")\n",
+        "  question = question.replace(\"plus\", \"+\")\n",
+        "  question = question.replace(\"and\", \"+\")\n",
+        "  return question"
+      ],
+      "execution_count": 118,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "ADbBCEhxp0Sf"
+      },
+      "source": [
+        "#Detect if question and then if closed or opened"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "aZV_gcsqp0ci"
+      },
+      "source": [
+        "def findSubject(question):\n",
+        "  nlp = spacy.load('en')\n",
+        "  doc=nlp(question)\n",
+        "\n",
+        "  result = [tok for tok in doc if (tok.dep_ == \"nsubj\")]\n",
+        "\n",
+        "  return result\n",
+        "\n",
+        "def analyseSentence(question):\n",
+        "  with io2.capture_output() as captured:\n",
+        "    nltk.download('punkt')\n",
+        "    nltk.download('averaged_perceptron_tagger')\n",
+        "\n",
+        "    text = question\n",
+        "    text = nltk.word_tokenize(text) \n",
+        "  return nltk.pos_tag(text) \n",
+        "\n",
+        "def isQuestion(question):\n",
+        "\n",
+        "  result = [\"isQuestion\", \"YN\"]\n",
+        "\n",
+        "  question_elements = ['what', 'where', 'when','how','why', \"which\", \"who\"]\n",
+        "  modal_elements = ['can','could','may','would','will','should', \"couldn't\",\"wouldn't\"]\n",
+        "  verb_elements = ['was','were','is','am','are','do', \"does\",\"did\"]\n",
+        "\n",
+        "  #First test\n",
+        "  first_word = question.split()[0]\n",
+        "\n",
+        "  if \"?\" in question :\n",
+        "    result[0] = \"question\"\n",
+        "\n",
+        "  #Second test\n",
+        "  analyzedSentence = analyseSentence(question)\n",
+        "\n",
+        "  foundSubject = 0\n",
+        "  foundVerb = 0\n",
+        "  foundAux = 0\n",
+        "\n",
+        "  for word in question.split():\n",
+        "    if word.lower() in verb_elements:\n",
+        "      foundVerb = str(analyzedSentence).find(word)\n",
+        "\n",
+        "  if findSubject(question) == []:\n",
+        "    if \"PRP\" in str(analyzedSentence):\n",
+        "      foundSubject = str(analyzedSentence).find('PRP')\n",
+        "  else:\n",
+        "    # print(findSubject(question)[0])\n",
+        "    foundSubject = str(analyzedSentence).find(str(findSubject(question)[0]))\n",
+        "\n",
+        "  if \"VB\" in str(analyzedSentence) and foundVerb == 0:\n",
+        "    foundVerb = str(analyzedSentence).find('VB')\n",
+        "  \n",
+        "  if \"MD\" in str(analyzedSentence):\n",
+        "    foundAux = str(analyzedSentence).find('MD')\n",
+        "\n",
+        "  wordsInQuestion = question.split()\n",
+        "  for word in question.split():\n",
+        "    if word.lower() in question_elements :\n",
+        "      result = [\"question\", \"WH\"]\n",
+        "      return result\n",
+        "\n",
+        "  if foundSubject == 0:\n",
+        "    #keyword = findKeyword(question)\n",
+        "    foundSubject = str(analyzedSentence).find(keyword)\n",
+        "\n",
+        "  if foundVerb < foundSubject : \n",
+        "    result[0] = \"question\"\n",
+        "\n",
+        "    for word in wordsInQuestion:\n",
+        "      word = word.lower()\n",
+        "\n",
+        "      if word in question_elements :\n",
+        "        result = [\"question\", \"WH\"]\n",
+        "        return result\n",
+        "        \n",
+        "  elif foundSubject < foundVerb and foundVerb != 0 and foundSubject != 0 and (foundAux > foundVerb or foundAux == 0):\n",
+        "    result[0] = \"sentence\"\n",
+        "\n",
+        "  else:\n",
+        "    #Third test\n",
+        "    for word in wordsInQuestion:\n",
+        "      word = word.lower()\n",
+        "      \n",
+        "      if word in modal_elements or foundAux < foundSubject:\n",
+        "        result[0] = \"question\"\n",
+        "        \n",
+        "      elif word in question_elements :\n",
+        "        result = [\"question\", \"WH\"]\n",
+        "        return result\n",
+        "      else:\n",
+        "        result[0] = \"sentence\"\n",
+        "\n",
+        "  return result"
+      ],
+      "execution_count": 119,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "RHQZdiAFe53R"
+      },
+      "source": [
+        "#MAIN PROGRAM (for open and closed ended questions)"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/",
+          "height": 963
+        },
+        "id": "kpKIj3D8e5D-",
+        "outputId": "f7afd004-682e-4fbf-ca24-ea7e6b3ec076"
+      },
+      "source": [
+        "#@title\n",
+        "newQuestion = \"\"\n",
+        "print(\"Good morning, I'm VEEMbot, your virtual assistant !\\nHow can I help you ?\")\n",
+        "\n",
+        "while newQuestion != \"n\":\n",
+        "\n",
+        "  textOrSpeech = input(\"\\nDo you want to talk or write to me ? (talk / write) : \\n\")\n",
+        "  if textOrSpeech == \"talk\":\n",
+        "    languageForSpeech = \"\"\n",
+        "    languageInput = input(\"In which language ? \")\n",
+        "    if \"fr\" in languageInput.lower():\n",
+        "      languageForSpeech = \"fr-FR\"\n",
+        "    elif \"ng\" in languageInput.lower():\n",
+        "      languageForSpeech = \"en-US\"\n",
+        "    \n",
+        "    get_audio()\n",
+        "    question = speech2text(languageForSpeech)\n",
+        "    language = findLanguage(question)\n",
+        "  \n",
+        "  else:\n",
+        "    question = input(\"Question : \")\n",
+        "    language = findLanguage(question)\n",
+        "\n",
+        "    checkCalculate = isCalcul(question)\n",
+        "    # question = correct_question(question, language)\n",
+        "\n",
+        "  #Check calculation\n",
+        "  if checkCalculate[0]:\n",
+        "      answer = \"It is \" + str(checkCalculate[1])\n",
+        "      text2speech(answer, \"en\")\n",
+        "\n",
+        "      answer = \"\\n2. Answ$er : \" + str(checkCalculate[1])\n",
+        "      print(answer)\n",
+        "\n",
+        "  else:     \n",
+        "    if language == \"en\":\n",
+        "      result = isQuestion(question)\n",
+        "    else:\n",
+        "      questionTranslated = translateQuestion(question, language) \n",
+        "      result = isQuestion(questionTranslated)\n",
+        "\n",
+        "    if result[0] == \"question\":\n",
+        "      if result[1] == \"YN\":\n",
+        "        print(\"2. Type : Close-ended question\")\n",
+        "        answer = closeQuestion(question, language)\n",
+        "        print(\"\\n7. Answer : \" + answer + \"\\n\")\n",
+        "        text2speech(answer, language)\n",
+        "\n",
+        "      else:\n",
+        "        print(\"2. Type : Open-ended question\")\n",
+        "        #check if time : if yes : it runs the function and print the result, if not, we enter in the if\n",
+        "        if not get_time(question, language):\n",
+        "          answer = openQuestion(question, language)\n",
+        "          print(\"\\n7. Answer : \" + answer + \"\\n\")\n",
+        "          text2speech(answer, language)\n",
+        "          moreInfos(question, language)\n",
+        "          \n",
+        "    elif result[0] == \"sentence\":\n",
+        "      #keyword = findKeywords(question, isOpen = False)\n",
+        "      #print(removeVerb(keyword))\n",
+        "\n",
+        "      del result[len(result) - 1]\n",
+        "      print(\"2. Type : Sentence\")\n",
+        "      result = detect_pos_neg_sentence(question)\n",
+        "      answer_sentences(result)\n",
+        "\n",
+        "  newQuestion = input(\"\\nNew question : (y/n) : \")"
+      ],
+      "execution_count": 140,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "text": [
+            "Good morning, I'm VEEMbot, your virtual assistant !\n",
+            "How can I help you ?\n",
+            "\n",
+            "Do you want to talk or write to me ? (talk / write) : \n",
+            "fea\n",
+            "Question : qu'est ce qu'un auto-tamponneuse ?\n",
+            "\n",
+            "1. Language : fr\n",
+            "\n",
+            "2. Type : Open-ended question\n",
+            "\n",
+            "3. Keyword : auto-tamponneuse\n",
+            "\n",
+            "4. Keyword without verb : auto-tamponneuse\n",
+            "\n",
+            "5. Summary : Une auto-tamponneuse, aussi appelée auto-box en Alsace,  auto-scooter en Belgique, auto-Camors en Normandie (du nom d’une famille Foraine aujourd’hui spécialisée dans l’exploitation de train-fantômes), auto-tamponnante dans le Nord, ou auto-butante ou auto-abutante en Mayenne, est une petite voiture électrique biplace protégée par des bourrelets amortisseurs de chocs, et qui sert comme attraction de fête foraine en entrechoquant d'autres voitures semblables sur une piste. Elle tire son énergie d'une tige d'alimentation placée généralement à l'arrière du véhicule et qui la relie à une grille métallique d'alimentation électrique installée au-dessus de la piste. La tension d'alimentation est en courant continu, de l'ordre de 90 à 100 volts et le positif (+) est appliqué sur cette grille métallique aérienne et la masse, pour le retour du courant est la surface de tôle au sol correctement reliée à la carcasse du manège et à la terre (potentiel zéro) afin d'éviter tout risque d'électrocution.\n",
+            "\n",
+            "6. Score : 0.9065160367183367\n",
+            "\n",
+            "7. Answer : Une petite voiture électrique biplace.\n",
+            "\n"
+          ],
+          "name": "stdout"
+        },
+        {
+          "output_type": "display_data",
+          "data": {
+            "text/html": [
+              "\n",
+              "                <audio controls=\"controls\" autoplay=\"autoplay\">\n",
+              "                    <source src=\"data:audio/x-wav;base64,//NExAAScP2AAUxIACe0IANCwPYA4D1wEx3QhAJjpLEt9e/9Om9757nP1k0GLo26UYsUOIxWTpCgMEjdKIEGLo5y7yH+QKLPlDgYLvEHz4gcD6////5B/27gUWodQX+H//NExAkUSdakAZlQAAb/mFE///L+wRS8kZxwam/zGLKQfMViAkPF5onBX/EIK5cbowEAWAWBBiwOfzDGtMPdjmQ//mGPPZ7lWPHjk5s9/9Fv///fx6pJAmh1AFyBSJND//NExAoTGZasAdNYABwfsAfg8kkmSy8vtrP+K/j9z6576o8amiKwNIsNEhiquoPx2NIhLtih3rVuOJ/mmRN0+4Yxl22lUXjHNDZp3////XXDdI6ZiMKu71AOhxAFl2On//NExBAVqb6oANHWlI6LhI2Ky/G/Q3sX49qeLWe4WuhxKFpw5QpiBaZwNRZFGBrw4ka8Kru9M7uY22qHFYcubs7RmLayJdKxYNERX///9qvIdOpSy+6zwxH5l13IgGjV//NExAwVoZqkANCYlGkVnrs0eofhRTYB0fhnyidAYnW5WjzQsD6vRAZW3SF97OqjlY8hVq1SmdFVma4dPxNdGhF6C8qc+p2XJHxKBDIwQHW////+v8DResf5NGVxKjMs//NExAgUGcagANlMlKMsAZEbb3xn2WNBuJPqCtu+jZi++yKOcs5Lskck5UkWXJqjiYMOeapnjPlMyTaRImhJ5RIDVdkB0YROvKTU5Y6aZ///99v+7TXn3JszzgY9KMCw//NExAoVCsKUANnEuCY8tY90nrz/j4JXjvKhmjJ0LaiV1LvOH3WVMzBhnhArnni+hjlZkb/m6OVyljHDoV0VFIcjKqKzto9//////9NCsikZHYcSoMWUqt6myAAMHvUc//NExAgS+dKUANqKlC/ShUpEiadyj6dVtDwfO5NoIgloYNeUvGZLyG6MDPiHCRbmA7yFEm0uv///Y1CjUqgo9yFxE402z///Oys28DVRUanTuYygVAzRZhdcsdMgOXcn//NExA8Tgc6UANlKlHsAp4YvAo7VODGsQd1yhbbms4ScilFaKNZ6AyqgsiHKzMzf//8tFGkSxxUa5ixU5toiJO///2LUlyEBci9HmYKgSCEaDjnloNeAggRS5tY0DXb7//NExBQRGcaQANoElOB1J5vVCs91791VqvFL9O2lHVjHoa5S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eKtwELipkyEhUyAg//NExHIRALnwAcYYAFhcMuios3zQFCokNfiwrSAhci6LM/QKi1VMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExIERiHmAADDMSDEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExI0AAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKwAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKwAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKwAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKwAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKwAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKwAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKwAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKwAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKwAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKwAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVSy7ityJ//NExKwAAANIAAAAADqKUeZTk0Ms0DfPY5TiNo1DjMg50QkU8jUeo1An0gepfiWlMQweBJyEF/PREocZJjFMUhYzoV7xzZGdzmniR6ZxWsKC+esyy0pRKKtUP4F6XpKE//NExKwAAANIAAAAAOo7n+TpWTLTj58w2xPNYbn9gukhPmGJwmkqiMmzZIKyAPkQZCQQCANhgVoF0lZNObhua5t7thOF1/6uo7m6xNROTL3ObhtyZbQJXK0lURgnR0oe//NExKwAAANIAAAAALJ2JODnHGh6HqultX8OPAiXzSAUEmaQEkmFCBBBBGZGTpORowuG2yAECTqRIyeZAFBQSMKMWjJMn/7BwGEQQknUWnjRne///GWTTbW/hyafe07J//NExP8qmyE0AHvSvNuTTzuDk97Rr2TTYECIJhe/mEIi+93ZO+0d7u//7u7Pv7EZ/+xMnd20diZceAAElWiUTkMEQIgRAiB0SicZGR89Y6MkJCSuWRSkRClChZz1qslW//NExKcg2vnwAHpMuVZFLVUMiIEgSBIAQGg0FhShxZEiRImqRNSWRIkWyRIiZqSyKT5+2+Z/7VWzP/7VppElVd57kSRIklKMzn/NBQCRzuaRIkSKM5/X7zM1VVXmZqq///NExHYh+x3oAGJMvO8zvqqrvPkiRIkUTSNfvM+iUkxBTUUzLjEwMKqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq\" type=\"audio/x-wav\" />\n",
+              "                    Your browser does not support the audio element.\n",
+              "                </audio>\n",
+              "              "
+            ],
+            "text/plain": [
+              "<IPython.lib.display.Audio object>"
+            ]
+          },
+          "metadata": {
+            "tags": []
+          }
+        },
+        {
+          "output_type": "error",
+          "ename": "KeyboardInterrupt",
+          "evalue": "ignored",
+          "traceback": [
+            "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+            "\u001b[0;31mKeyboardInterrupt\u001b[0m                         Traceback (most recent call last)",
+            "\u001b[0;32m/usr/local/lib/python3.6/dist-packages/ipykernel/kernelbase.py\u001b[0m in \u001b[0;36m_input_request\u001b[0;34m(self, prompt, ident, parent, password)\u001b[0m\n\u001b[1;32m    728\u001b[0m             \u001b[0;32mtry\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m--> 729\u001b[0;31m                 \u001b[0mident\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mreply\u001b[0m \u001b[0;34m=\u001b[0m \u001b[0mself\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0msession\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mrecv\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mself\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mstdin_socket\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0;36m0\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m    730\u001b[0m             \u001b[0;32mexcept\u001b[0m \u001b[0mException\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+            "\u001b[0;32m/usr/local/lib/python3.6/dist-packages/jupyter_client/session.py\u001b[0m in \u001b[0;36mrecv\u001b[0;34m(self, socket, mode, content, copy)\u001b[0m\n\u001b[1;32m    802\u001b[0m         \u001b[0;32mtry\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m--> 803\u001b[0;31m             \u001b[0mmsg_list\u001b[0m \u001b[0;34m=\u001b[0m \u001b[0msocket\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mrecv_multipart\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mmode\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mcopy\u001b[0m\u001b[0;34m=\u001b[0m\u001b[0mcopy\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m    804\u001b[0m         \u001b[0;32mexcept\u001b[0m \u001b[0mzmq\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mZMQError\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0me\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+            "\u001b[0;32m/usr/local/lib/python3.6/dist-packages/zmq/sugar/socket.py\u001b[0m in \u001b[0;36mrecv_multipart\u001b[0;34m(self, flags, copy, track)\u001b[0m\n\u001b[1;32m    565\u001b[0m         \"\"\"\n\u001b[0;32m--> 566\u001b[0;31m         \u001b[0mparts\u001b[0m \u001b[0;34m=\u001b[0m \u001b[0;34m[\u001b[0m\u001b[0mself\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mrecv\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mflags\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mcopy\u001b[0m\u001b[0;34m=\u001b[0m\u001b[0mcopy\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mtrack\u001b[0m\u001b[0;34m=\u001b[0m\u001b[0mtrack\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m]\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m    567\u001b[0m         \u001b[0;31m# have first part already, only loop while more to receive\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+            "\u001b[0;32mzmq/backend/cython/socket.pyx\u001b[0m in \u001b[0;36mzmq.backend.cython.socket.Socket.recv\u001b[0;34m()\u001b[0m\n",
+            "\u001b[0;32mzmq/backend/cython/socket.pyx\u001b[0m in \u001b[0;36mzmq.backend.cython.socket.Socket.recv\u001b[0;34m()\u001b[0m\n",
+            "\u001b[0;32mzmq/backend/cython/socket.pyx\u001b[0m in \u001b[0;36mzmq.backend.cython.socket._recv_copy\u001b[0;34m()\u001b[0m\n",
+            "\u001b[0;32m/usr/local/lib/python3.6/dist-packages/zmq/backend/cython/checkrc.pxd\u001b[0m in \u001b[0;36mzmq.backend.cython.checkrc._check_rc\u001b[0;34m()\u001b[0m\n",
+            "\u001b[0;31mKeyboardInterrupt\u001b[0m: ",
+            "\nDuring handling of the above exception, another exception occurred:\n",
+            "\u001b[0;31mKeyboardInterrupt\u001b[0m                         Traceback (most recent call last)",
+            "\u001b[0;32m<ipython-input-140-86fe6a5ab7b7>\u001b[0m in \u001b[0;36m<module>\u001b[0;34m()\u001b[0m\n\u001b[1;32m     54\u001b[0m           \u001b[0mprint\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0;34m\"\\n7. Answer : \"\u001b[0m \u001b[0;34m+\u001b[0m \u001b[0manswer\u001b[0m \u001b[0;34m+\u001b[0m \u001b[0;34m\"\\n\"\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     55\u001b[0m           \u001b[0mtext2speech\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0manswer\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mlanguage\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 56\u001b[0;31m           \u001b[0mmoreInfos\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mquestion\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mlanguage\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m     57\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     58\u001b[0m     \u001b[0;32melif\u001b[0m \u001b[0mresult\u001b[0m\u001b[0;34m[\u001b[0m\u001b[0;36m0\u001b[0m\u001b[0;34m]\u001b[0m \u001b[0;34m==\u001b[0m \u001b[0;34m\"sentence\"\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+            "\u001b[0;32m<ipython-input-104-304be6f04274>\u001b[0m in \u001b[0;36mmoreInfos\u001b[0;34m(question, language)\u001b[0m\n\u001b[1;32m      1\u001b[0m \u001b[0;32mdef\u001b[0m \u001b[0mmoreInfos\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mquestion\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mlanguage\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m----> 2\u001b[0;31m       \u001b[0mmoreDetails\u001b[0m \u001b[0;34m=\u001b[0m \u001b[0minput\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0;34m\"\\n8. More details (y/n) : \"\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m      3\u001b[0m       \u001b[0;32mif\u001b[0m \u001b[0mmoreDetails\u001b[0m \u001b[0;34m==\u001b[0m \u001b[0;34m\"y\"\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m      4\u001b[0m         \u001b[0mprint\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0;34m\"Let's see this website : \"\u001b[0m \u001b[0;34m+\u001b[0m \u001b[0msearch\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mquestion\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mlang\u001b[0m\u001b[0;34m=\u001b[0m\u001b[0mlanguage\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m[\u001b[0m\u001b[0;36m0\u001b[0m\u001b[0;34m]\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+            "\u001b[0;32m/usr/local/lib/python3.6/dist-packages/ipykernel/kernelbase.py\u001b[0m in \u001b[0;36mraw_input\u001b[0;34m(self, prompt)\u001b[0m\n\u001b[1;32m    702\u001b[0m             \u001b[0mself\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_parent_ident\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m    703\u001b[0m             \u001b[0mself\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_parent_header\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m--> 704\u001b[0;31m             \u001b[0mpassword\u001b[0m\u001b[0;34m=\u001b[0m\u001b[0;32mFalse\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m    705\u001b[0m         )\n\u001b[1;32m    706\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n",
+            "\u001b[0;32m/usr/local/lib/python3.6/dist-packages/ipykernel/kernelbase.py\u001b[0m in \u001b[0;36m_input_request\u001b[0;34m(self, prompt, ident, parent, password)\u001b[0m\n\u001b[1;32m    732\u001b[0m             \u001b[0;32mexcept\u001b[0m \u001b[0mKeyboardInterrupt\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m    733\u001b[0m                 \u001b[0;31m# re-raise KeyboardInterrupt, to truncate traceback\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m--> 734\u001b[0;31m                 \u001b[0;32mraise\u001b[0m \u001b[0mKeyboardInterrupt\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m    735\u001b[0m             \u001b[0;32melse\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m    736\u001b[0m                 \u001b[0;32mbreak\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+            "\u001b[0;31mKeyboardInterrupt\u001b[0m: "
+          ]
+        }
+      ]
+    }
+  ]
+}
